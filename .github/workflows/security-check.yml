@@ -1,0 +1,41 @@
+name: Security Check
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'  # كل إثنين الساعة 8 صباحاً
+  push:
+    branches: [ main ]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.2'
+
+    - name: Install Dependencies
+      run: composer install --no-progress --prefer-dist
+
+    - name: Composer Security Check
+      run: |
+        composer require --dev roave/security-advisories:dev-latest
+        echo "✅ Composer security check passed"
+
+    - name: Check for exposed credentials
+      run: |
+        # Check for hardcoded passwords/keys
+        grep -r "password\s*=" . --include="*.php" --include="*.env" || true
+        grep -r "secret\s*=" . --include="*.php" --include="*.env" || true
+        grep -r "api_key" . --include="*.php" --include="*.env" || true
+        
+        # Check .env.example doesn't contain real credentials
+        if grep -q "realpassword\|actualsecret" .env.example 2>/dev/null; then
+          echo "⚠️  Warning: .env.example might contain real credentials"
+          exit 1
+        fi

@@ -1,57 +1,60 @@
 version: '3.8'
 
 services:
-  # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
     container_name: aaker-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: estate_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: 
-      POSTGRES_HOST_AUTH_METHOD: trust
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: aaker_realestate
+      POSTGRES_USER: aaker_user
+      POSTGRES_PASSWORD: secure_password_123
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U aaker_user"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # Redis للكاش والطابور
   redis:
     image: redis:7-alpine
     container_name: aaker-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    command: redis-server --requirepass "redis_password_456"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf
+    ports:
+      - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout: 3s
+      retries: 3
 
-  # Mailhog للبريد الإلكتروني (للتطوير)
-  mailhog:
-    image: mailhog/mailhog
-    container_name: aaker-mailhog
+  mailpit:
+    image: axllent/mailpit
+    container_name: aaker-mailpit
     restart: unless-stopped
     ports:
-      - "1025:1025"   # SMTP
-      - "8025:8025"   # Web UI
-    environment:
-      MH_STORAGE: maildir
-      MH_MAILDIR_PATH: /tmp
+      - "8025:8025"  # Web UI
+      - "1025:1025"  # SMTP server
+    volumes:
+      - mailpit_data:/data
 
 volumes:
   postgres_data:
     driver: local
   redis_data:
     driver: local
+  mailpit_data:
+    driver: local
+
+networks:
+  default:
+    name: aaker-network

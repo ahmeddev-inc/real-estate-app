@@ -1,0 +1,72 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [ develop ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Deployment
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.STAGING_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        
+        ssh-keyscan -H ${{ secrets.STAGING_SERVER_HOST }} >> ~/.ssh/known_hosts
+
+    - name: Deploy to Staging Server
+      env:
+        DEPLOY_PATH: "/var/www/staging.aakerz.com"
+        APP_URL: "https://staging.aakerz.com"
+      run: |
+        ssh ${{ secrets.STAGING_SERVER_USER }}@${{ secrets.STAGING_SERVER_HOST }} << 'EOF2'
+          set -e
+          cd $DEPLOY_PATH
+          
+          # Enable maintenance mode
+          php artisan down --message="جاري التحديث..." --retry=60
+          
+          # Pull latest changes
+          git fetch origin develop
+          git reset --hard origin/develop
+          
+          # Install dependencies
+          composer install --no-dev --optimize-autoloader
+          npm ci
+          npm run build
+          
+          # Run database migrations
+          php artisan migrate --force
+          
+          # Clear cache
+          php artisan config:cache
+          php artisan route:cache
+          php artisan view:cache
+          
+          # Restart queues
+          php artisan queue:restart
+          
+          # Disable maintenance mode
+          php artisan up
+          
+          echo "✅ Deployment completed successfully!"
+        EOF2
+
+    - name: Send Slack Notification
+      if: success()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        author_name: GitHub Actions
+        fields: repo,message,commit,author,action,eventName,ref,workflow,job,took
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

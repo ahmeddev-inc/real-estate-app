@@ -1,11 +1,11 @@
 /node_modules
+/public/build
 /public/hot
 /public/storage
 /storage/*.key
 /vendor
 .env
 .env.backup
-.env.production
 .phpunit.result.cache
 Homestead.json
 Homestead.yaml
@@ -13,39 +13,7 @@ npm-debug.log
 yarn-error.log
 /.idea
 /.vscode
-/.fleet
-
-# Docker
-docker-compose.override.yml
-
-# Tests
+/.vagrant
 /coverage
-
-# macOS
 .DS_Store
-.AppleDouble
-.LSOverride
-Icon
-.Spotlight-V100
-.Trashes
-
-# Windows
 Thumbs.db
-ehthumbs.db
-Desktop.ini
-
-# Linux
-*~
-
-# Backup files
-*.backup
-*.bak
-
-# Local development files
-_ide_helper.php
-_ide_helper_models.php
-.phpstorm.meta.php
-
-# Custom
-docker/
-*.log

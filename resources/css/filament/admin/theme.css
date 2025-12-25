@@ -1,0 +1,134 @@
+/* عقار زين - Design System v1.0 */
+/* RTL Support - Arabic Interface */
+
+:root {
+    /* Color System */
+    --primary-50: #eff6ff;
+    --primary-100: #dbeafe;
+    --primary-500: #3b82f6;
+    --primary-600: #2563eb;
+    --primary-700: #1d4ed8;
+    
+    --secondary-50: #ecfdf5;
+    --secondary-100: #d1fae5;
+    --secondary-500: #10b981;
+    --secondary-600: #059669;
+    
+    --danger-50: #fef2f2;
+    --danger-500: #ef4444;
+    --danger-600: #dc2626;
+    
+    /* Typography */
+    --font-family-arabic: 'Cairo', sans-serif;
+    --font-family-english: 'Inter', sans-serif;
+}
+
+/* RTL Direction */
+[dir="rtl"] {
+    direction: rtl;
+    text-align: right;
+}
+
+/* Arabic Font Support */
+body {
+    font-family: var(--font-family-arabic), var(--font-family-english), sans-serif;
+}
+
+/* Custom Components */
+.aaker-card {
+    border-radius: 0.75rem;
+    border: 1px solid #e5e7eb;
+    background: white;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    transition: all 0.2s ease;
+}
+
+.aaker-card:hover {
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    transform: translateY(-2px);
+}
+
+/* Status Badges */
+.status-badge {
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.status-available { background: #d1fae5; color: #065f46; }
+.status-reserved { background: #fef3c7; color: #92400e; }
+.status-sold { background: #f3f4f6; color: #374151; }
+.status-draft { background: #e5e7eb; color: #4b5563; }
+
+/* Custom Buttons */
+.btn-primary {
+    background: linear-gradient(135deg, var(--primary-500), var(--primary-700));
+    color: white;
+    border: none;
+    border-radius: 0.5rem;
+    padding: 0.625rem 1.25rem;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+.btn-primary:hover {
+    background: linear-gradient(135deg, var(--primary-600), var(--primary-800));
+    transform: translateY(-1px);
+    box-shadow: 0 4px 6px rgba(59, 130, 246, 0.3);
+}
+
+/* Form Styling */
+.form-input {
+    border: 1px solid #d1d5db;
+    border-radius: 0.5rem;
+    padding: 0.625rem 0.875rem;
+    transition: all 0.2s;
+}
+
+.form-input:focus {
+    border-color: var(--primary-500);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    outline: none;
+}
+
+/* Table Styling */
+.data-table {
+    border-radius: 0.5rem;
+    overflow: hidden;
+}
+
+.data-table th {
+    background: #f9fafb;
+    padding: 1rem;
+    font-weight: 600;
+    color: #374151;
+    border-bottom: 2px solid #e5e7eb;
+}
+
+.data-table td {
+    padding: 1rem;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+/* Navigation */
+.sidebar-nav {
+    background: linear-gradient(180deg, #1e40af 0%, #1e3a8a 100%);
+}
+
+.nav-item {
+    color: #dbeafe;
+    padding: 0.75rem 1rem;
+    border-radius: 0.375rem;
+    transition: all 0.2s;
+}
+
+.nav-item:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+}
+
+.nav-item.active {
+    background: rgba(255, 255, 255, 0.15);
+    color: white;
+}

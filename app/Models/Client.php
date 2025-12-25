@@ -6,10 +6,14 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Builder;
+use App\Traits\HasUuid;
+use App\Enums\ClientType;
+use App\Enums\ClientStatus;
+use App\Enums\Priority;
 
 class Client extends Model
 {
-    use HasFactory, SoftDeletes;
+    use HasFactory, SoftDeletes, HasUuid;
 
     protected $fillable = [
         'uuid',
@@ -85,6 +89,9 @@ class Client extends Model
         'allow_sms' => 'boolean',
         'allow_email' => 'boolean',
         'allow_whatsapp' => 'boolean',
+        'type' => ClientType::class,
+        'status' => ClientStatus::class,
+        'priority' => Priority::class,
     ];
 
     protected $appends = [
@@ -92,6 +99,10 @@ class Client extends Model
         'is_lead',
         'is_client',
         'days_since_last_contact',
+        'type_label',
+        'status_label',
+        'priority_label',
+        'is_overdue_for_follow_up',
     ];
 
     // ==================== RELATIONSHIPS ====================
@@ -108,32 +119,50 @@ class Client extends Model
 
     // ==================== SCOPES ====================
 
-    public function scopeLeads(Builder $query)
+    public function scopeLeads(Builder $query): Builder
     {
-        return $query->where('status', 'lead');
+        return $query->where('status', ClientStatus::LEAD);
     }
 
-    public function scopeClients(Builder $query)
+    public function scopeClients(Builder $query): Builder
     {
-        return $query->where('status', 'client');
+        return $query->where('status', ClientStatus::CLIENT);
     }
 
-    public function scopeByType(Builder $query, $type)
+    public function scopeActive(Builder $query): Builder
+    {
+        return $query->where('status', '!=', ClientStatus::INACTIVE)
+            ->where('status', '!=', ClientStatus::BLACKLISTED);
+    }
+
+    public function scopeByType(Builder $query, ClientType $type): Builder
     {
         return $query->where('type', $type);
     }
 
-    public function scopeByCity(Builder $query, $city)
+    public function scopeByCity(Builder $query, string $city): Builder
     {
         return $query->where('city', $city);
     }
 
-    public function scopeByAgent(Builder $query, $agentId)
+    public function scopeByAgent(Builder $query, int $agentId): Builder
     {
         return $query->where('assigned_agent_id', $agentId);
     }
 
-    public function scopeSearch(Builder $query, $search)
+    public function scopeHighPriority(Builder $query): Builder
+    {
+        return $query->whereIn('priority', [Priority::HIGH, Priority::URGENT, Priority::VIP]);
+    }
+
+    public function scopeNeedsFollowUp(Builder $query): Builder
+    {
+        return $query->whereNotNull('next_follow_up_at')
+            ->where('next_follow_up_at', '<=', now())
+            ->whereNotIn('status', [ClientStatus::INACTIVE, ClientStatus::BLACKLISTED]);
+    }
+
+    public function scopeSearch(Builder $query, string $search): Builder
     {
         return $query->where(function ($q) use ($search) {
             $q->where('first_name', 'ILIKE', "%{$search}%")
@@ -147,22 +176,22 @@ class Client extends Model
 
     // ==================== ACCESSORS ====================
 
-    public function getFullNameAttribute()
+    public function getFullNameAttribute(): string
     {
         return trim($this->first_name . ' ' . $this->last_name);
     }
 
-    public function getIsLeadAttribute()
+    public function getIsLeadAttribute(): bool
     {
-        return $this->status === 'lead';
+        return $this->status === ClientStatus::LEAD;
     }
 
-    public function getIsClientAttribute()
+    public function getIsClientAttribute(): bool
     {
-        return $this->status === 'client';
+        return $this->status === ClientStatus::CLIENT;
     }
 
-    public function getDaysSinceLastContactAttribute()
+    public function getDaysSinceLastContactAttribute(): ?int
     {
         if (!$this->last_contacted_at) {
             return null;
@@ -171,34 +200,219 @@ class Client extends Model
         return now()->diffInDays($this->last_contacted_at);
     }
 
-    // ==================== BUSINESS METHODS ====================
-
-    public function convertToClient()
+    public function getTypeLabelAttribute(): string
     {
-        if ($this->status !== 'client') {
-            $this->update([
-                'status' => 'client',
-                'converted_to_client_at' => now(),
-            ]);
-        }
+        return ClientType::tryFrom($this->type)?->label() ?? $this->type;
     }
 
-    public function updateLastContact()
+    public function getStatusLabelAttribute(): string
     {
-        $this->update(['last_contacted_at' => now()]);
+        return ClientStatus::tryFrom($this->status)?->label() ?? $this->status;
     }
 
-    public function scheduleFollowUp($date)
+    public function getPriorityLabelAttribute(): string
     {
-        $this->update(['next_follow_up_at' => $date]);
+        return Priority::tryFrom($this->priority)?->label() ?? $this->priority;
     }
 
-    public function isOverdueForFollowUp()
+    public function getIsOverdueForFollowUpAttribute(): bool
     {
         if (!$this->next_follow_up_at) {
             return false;
         }
 
         return now()->greaterThan($this->next_follow_up_at);
+    }
+
+    public function getBudgetRangeAttribute(): string
+    {
+        if ($this->min_budget && $this->max_budget) {
+            return number_format($this->min_budget, 0) . ' - ' . number_format($this->max_budget, 0) . ' ج.م';
+        } elseif ($this->min_budget) {
+            return 'من ' . number_format($this->min_budget, 0) . ' ج.م';
+        } elseif ($this->max_budget) {
+            return 'حتى ' . number_format($this->max_budget, 0) . ' ج.م';
+        }
+        
+        return 'غير محدد';
+    }
+
+    // ==================== BUSINESS METHODS ====================
+
+    public function convertToClient(): bool
+    {
+        if ($this->status !== ClientStatus::CLIENT) {
+            $this->update([
+                'status' => ClientStatus::CLIENT,
+                'converted_to_client_at' => now(),
+            ]);
+            return true;
+        }
+        return false;
+    }
+
+    public function convertToProspect(): bool
+    {
+        if ($this->status === ClientStatus::LEAD) {
+            $this->update(['status' => ClientStatus::PROSPECT]);
+            return true;
+        }
+        return false;
+    }
+
+    public function updateLastContact(): void
+    {
+        $this->update(['last_contacted_at' => now()]);
+    }
+
+    public function scheduleFollowUp(\DateTimeInterface $date): void
+    {
+        $this->update(['next_follow_up_at' => $date]);
+    }
+
+    public function scheduleAutoFollowUp(): void
+    {
+        $followUpDays = $this->priority->getFollowUpDays();
+        $nextDate = now()->addDays($followUpDays);
+        $this->scheduleFollowUp($nextDate);
+    }
+
+    public function markAsContacted(): void
+    {
+        $this->updateLastContact();
+        $this->scheduleAutoFollowUp();
+    }
+
+    public function addNote(string $note, int $userId): void
+    {
+        $notes = $this->notes ?? '';
+        $timestamp = now()->format('Y-m-d H:i:s');
+        $userNote = "[{$timestamp}] المستخدم #{$userId}: {$note}\n";
+        
+        $this->update(['notes' => $notes . $userNote]);
+    }
+
+    public function addTag(string $tag): void
+    {
+        $tags = $this->tags ?? [];
+        if (!in_array($tag, $tags)) {
+            $tags[] = $tag;
+            $this->update(['tags' => $tags]);
+        }
+    }
+
+    public function removeTag(string $tag): void
+    {
+        $tags = $this->tags ?? [];
+        $index = array_search($tag, $tags);
+        if ($index !== false) {
+            unset($tags[$index]);
+            $this->update(['tags' => array_values($tags)]);
+        }
+    }
+
+    public function matchesProperty(Property $property): bool
+    {
+        // مطابقة الميزانية
+        if ($this->min_budget && $property->price_egp < $this->min_budget) {
+            return false;
+        }
+        if ($this->max_budget && $property->price_egp > $this->max_budget) {
+            return false;
+        }
+
+        // مطابقة عدد الغرف
+        if ($this->min_bedrooms && $property->bedrooms < $this->min_bedrooms) {
+            return false;
+        }
+        if ($this->max_bedrooms && $property->bedrooms > $this->max_bedrooms) {
+            return false;
+        }
+
+        // مطابقة المساحة
+        if ($this->min_area && $property->built_area < $this->min_area) {
+            return false;
+        }
+        if ($this->max_area && $property->built_area > $this->max_area) {
+            return false;
+        }
+
+        // مطابقة الموقع
+        if (!empty($this->preferred_locations) && !in_array($property->city, $this->preferred_locations)) {
+            return false;
+        }
+
+        // مطابقة نوع العقار
+        if (!empty($this->preferred_property_types) && !in_array($property->type, $this->preferred_property_types)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    public function getMatchScore(Property $property): float
+    {
+        $score = 0;
+        $totalCriteria = 0;
+
+        // مطابقة الميزانية (40%)
+        if ($this->min_budget || $this->max_budget) {
+            $totalCriteria += 40;
+            if ($this->matchesBudget($property->price_egp)) {
+                $score += 40;
+            }
+        }
+
+        // مطابقة الموقع (30%)
+        if (!empty($this->preferred_locations)) {
+            $totalCriteria += 30;
+            if (in_array($property->city, $this->preferred_locations)) {
+                $score += 30;
+            }
+        }
+
+        // مطابقة عدد الغرف (20%)
+        if ($this->min_bedrooms || $this->max_bedrooms) {
+            $totalCriteria += 20;
+            if ($this->matchesBedrooms($property->bedrooms)) {
+                $score += 20;
+            }
+        }
+
+        // مطابقة نوع العقار (10%)
+        if (!empty($this->preferred_property_types)) {
+            $totalCriteria += 10;
+            if (in_array($property->type, $this->preferred_property_types)) {
+                $score += 10;
+            }
+        }
+
+        if ($totalCriteria === 0) {
+            return 100; // إذا لم تكن هناك معايير، كل العقارات مناسبة
+        }
+
+        return ($score / $totalCriteria) * 100;
+    }
+
+    private function matchesBudget(float $price): bool
+    {
+        if ($this->min_budget && $price < $this->min_budget) {
+            return false;
+        }
+        if ($this->max_budget && $price > $this->max_budget) {
+            return false;
+        }
+        return true;
+    }
+
+    private function matchesBedrooms(int $bedrooms): bool
+    {
+        if ($this->min_bedrooms && $bedrooms < $this->min_bedrooms) {
+            return false;
+        }
+        if ($this->max_bedrooms && $bedrooms > $this->max_bedrooms) {
+            return false;
+        }
+        return true;
     }
 }
