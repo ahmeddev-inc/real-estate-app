@@ -11,40 +11,47 @@ use App\Exceptions\BusinessException;
 
 class UserService extends BaseService
 {
+    /**
+     * Initialize the service with User model
+     */
     public function __construct()
     {
         $this->model = User::class;
     }
 
     /**
-     * إنشاء مستخدم جديد
+     * Create a new user with validation and auditing
+     *
+     * @param array $data User data including name, email, password, etc.
+     * @return \App\Models\User The created user instance
+     * @throws \App\Exceptions\BusinessException If email or phone already exists
      */
     public function createUser(array $data): User
     {
         return $this->transaction(function () use ($data) {
-            // تجهيز كلمة المرور
+            // Prepare password
             if (isset($data['password'])) {
                 $data['password'] = Hash::make($data['password']);
             }
 
-            // تعيين القيم الافتراضية
+            // Set default values
             $data['status'] = $data['status'] ?? UserStatus::ACTIVE->value;
             $data['role'] = $data['role'] ?? UserRole::AGENT->value;
 
-            // التحقق من البريد الإلكتروني الفريد
+            // Validate unique email
             if (isset($data['email']) && $this->emailExists($data['email'])) {
                 throw new BusinessException('البريد الإلكتروني مسجل بالفعل', 400);
             }
 
-            // التحقق من رقم الهاتف الفريد
+            // Validate unique phone
             if (isset($data['phone']) && $this->phoneExists($data['phone'])) {
                 throw new BusinessException('رقم الهاتف مسجل بالفعل', 400);
             }
 
-            // إنشاء المستخدم
+            // Create user
             $user = User::create($data);
 
-            // تسجيل الحدث
+            // Log audit event
             $user->logAudit('created', $user->toArray());
 
             return $user;
@@ -52,41 +59,46 @@ class UserService extends BaseService
     }
 
     /**
-     * تحديث بيانات المستخدم
+     * Update an existing user's information
+     *
+     * @param string $uuid User UUID
+     * @param array $data Updated user data
+     * @return \App\Models\User The updated user instance
+     * @throws \App\Exceptions\BusinessException If email or phone already exists
      */
     public function updateUser(string $uuid, array $data): User
     {
         return $this->transaction(function () use ($uuid, $data) {
             $user = $this->findByUuidOrFail($uuid);
 
-            // تحديث كلمة المرور إذا تم توفيرها
+            // Update password if provided
             if (isset($data['password']) && !empty($data['password'])) {
                 $data['password'] = Hash::make($data['password']);
             } else {
                 unset($data['password']);
             }
 
-            // التحقق من تفرد البريد الإلكتروني
+            // Validate unique email
             if (isset($data['email']) && $data['email'] !== $user->email) {
                 if ($this->emailExists($data['email'], $user->id)) {
                     throw new BusinessException('البريد الإلكتروني مسجل بالفعل', 400);
                 }
             }
 
-            // التحقق من تفرد رقم الهاتف
+            // Validate unique phone
             if (isset($data['phone']) && $data['phone'] !== $user->phone) {
                 if ($this->phoneExists($data['phone'], $user->id)) {
                     throw new BusinessException('رقم الهاتف مسجل بالفعل', 400);
                 }
             }
 
-            // حفظ البيانات القديمة للمراجعة
+            // Save old data for audit
             $oldData = $user->toArray();
 
-            // تحديث المستخدم
+            // Update user
             $user->update($data);
 
-            // تسجيل التغييرات
+            // Log changes
             $user->logAudit('updated', $user->getChanges(), $oldData);
 
             return $user->fresh();
@@ -94,7 +106,12 @@ class UserService extends BaseService
     }
 
     /**
-     * تحديث حالة المستخدم
+     * Update user status (active, suspended, etc.)
+     *
+     * @param string $uuid User UUID
+     * @param \App\Enums\UserStatus $status New status
+     * @param string|null $reason Reason for status change
+     * @return \App\Models\User Updated user instance
      */
     public function updateUserStatus(string $uuid, UserStatus $status, ?string $reason = null): User
     {
@@ -115,7 +132,7 @@ class UserService extends BaseService
 
             $user->update($updateData);
 
-            // تسجيل تغيير الحالة
+            // Log status change
             $user->logAudit('status_changed', [
                 'new_status' => $status->value,
                 'old_status' => $oldStatus,
@@ -127,14 +144,19 @@ class UserService extends BaseService
     }
 
     /**
-     * تحديث صلاحيات المستخدم
+     * Update user permissions
+     *
+     * @param string $uuid User UUID
+     * @param array $permissions New permissions array
+     * @return \App\Models\User Updated user instance
+     * @throws \App\Exceptions\BusinessException If trying to modify super admin
      */
     public function updateUserPermissions(string $uuid, array $permissions): User
     {
         return $this->transaction(function () use ($uuid, $permissions) {
             $user = $this->findByUuidOrFail($uuid);
 
-            // التحقق من صلاحية المستخدم للتعديل
+            // Check if user can be modified
             if ($user->role === UserRole::SUPER_ADMIN) {
                 throw new BusinessException('لا يمكن تعديل صلاحيات المدير العام', 403);
             }
@@ -143,7 +165,7 @@ class UserService extends BaseService
 
             $user->update(['permissions' => $permissions]);
 
-            // تسجيل تغيير الصلاحيات
+            // Log permission change
             $user->logAudit('permissions_updated', [
                 'new_permissions' => $permissions,
                 'old_permissions' => $oldPermissions,
@@ -154,7 +176,11 @@ class UserService extends BaseService
     }
 
     /**
-     * تحديث آخر تسجيل دخول
+     * Update last login timestamp and IP
+     *
+     * @param string $uuid User UUID
+     * @param string $ip IP address of login
+     * @return void
      */
     public function updateLastLogin(string $uuid, string $ip): void
     {
@@ -163,13 +189,17 @@ class UserService extends BaseService
     }
 
     /**
-     * الحصول على جميع الوكلاء
+     * Get all agents with filtering and pagination
+     *
+     * @param array $filters Filters array [status, city, search]
+     * @param int $perPage Number of items per page
+     * @return \Illuminate\Contracts\Pagination\LengthAwarePaginator
      */
     public function getAgents(array $filters = [], int $perPage = 15)
     {
         $query = User::where('role', UserRole::AGENT->value);
 
-        // تطبيق الفلاتر
+        // Apply filters
         if (isset($filters['status'])) {
             $query->where('status', $filters['status']);
         }
@@ -192,7 +222,11 @@ class UserService extends BaseService
     }
 
     /**
-     * الحصول على إحصائيات الوسيط
+     * Get agent statistics (properties, clients, commissions)
+     *
+     * @param string $uuid Agent UUID
+     * @return array Agent statistics
+     * @throws \App\Exceptions\BusinessException If user is not an agent
      */
     public function getAgentStats(string $uuid): array
     {
@@ -216,13 +250,18 @@ class UserService extends BaseService
     }
 
     /**
-     * البحث عن مستخدمين
+     * Search users with filters
+     *
+     * @param string $search Search term
+     * @param array $filters Additional filters [role, status, city]
+     * @param int $perPage Number of items per page
+     * @return \Illuminate\Contracts\Pagination\LengthAwarePaginator
      */
     public function searchUsers(string $search, array $filters = [], int $perPage = 15)
     {
         $query = User::query();
 
-        // تطبيق البحث
+        // Apply search
         $query->where(function ($q) use ($search) {
             $q->where('first_name', 'ILIKE', "%{$search}%")
               ->orWhere('last_name', 'ILIKE', "%{$search}%")
@@ -232,7 +271,7 @@ class UserService extends BaseService
               ->orWhereRaw("CONCAT(first_name, ' ', last_name) ILIKE ?", ["%{$search}%"]);
         });
 
-        // تطبيق الفلاتر
+        // Apply filters
         if (isset($filters['role'])) {
             $query->where('role', $filters['role']);
         }
@@ -249,7 +288,11 @@ class UserService extends BaseService
     }
 
     /**
-     * التحقق من وجود البريد الإلكتروني
+     * Check if email already exists
+     *
+     * @param string $email Email to check
+     * @param int|null $excludeUserId User ID to exclude (for updates)
+     * @return bool True if email exists
      */
     private function emailExists(string $email, ?int $excludeUserId = null): bool
     {
@@ -263,7 +306,11 @@ class UserService extends BaseService
     }
 
     /**
-     * التحقق من وجود رقم الهاتف
+     * Check if phone already exists
+     *
+     * @param string $phone Phone to check
+     * @param int|null $excludeUserId User ID to exclude (for updates)
+     * @return bool True if phone exists
      */
     private function phoneExists(string $phone, ?int $excludeUserId = null): bool
     {
@@ -277,14 +324,17 @@ class UserService extends BaseService
     }
 
     /**
-     * حساب عمولة الوسيط
+     * Calculate total commission for agent
+     *
+     * @param \App\Models\User $agent Agent instance
+     * @return float Total commission amount
      */
     private function calculateAgentCommission(User $agent): float
     {
-        // هذا سيتغير عند إضافة نموذج الصفقات
+        // This will change when deal model is added
         $commission = 0;
 
-        // حساب العمولة من العقارات المباعة
+        // Calculate commission from sold properties
         $soldProperties = $agent->managedProperties()
             ->where('status', 'sold')
             ->get();
@@ -297,7 +347,10 @@ class UserService extends BaseService
     }
 
     /**
-     * حساب نسبة نجاح الوسيط
+     * Calculate agent success rate
+     *
+     * @param \App\Models\User $agent Agent instance
+     * @return float Success rate percentage
      */
     private function calculateAgentSuccessRate(User $agent): float
     {
@@ -314,7 +367,10 @@ class UserService extends BaseService
     }
 
     /**
-     * الحصول على المستخدمين الذين ليس لديهم مدير
+     * Get users without manager assignment
+     *
+     * @param array $filters Additional filters [role, status]
+     * @return \Illuminate\Database\Eloquent\Collection
      */
     public function getUsersWithoutManager(array $filters = [])
     {
@@ -332,7 +388,12 @@ class UserService extends BaseService
     }
 
     /**
-     * تعيين مدير للمستخدم
+     * Assign manager to user
+     *
+     * @param string $userUuid User UUID
+     * @param string $managerUuid Manager UUID
+     * @return \App\Models\User Updated user instance
+     * @throws \App\Exceptions\BusinessException If manager is not admin
      */
     public function assignManager(string $userUuid, string $managerUuid): User
     {
@@ -340,12 +401,12 @@ class UserService extends BaseService
             $user = $this->findByUuidOrFail($userUuid);
             $manager = $this->findByUuidOrFail($managerUuid);
 
-            // التحقق من أن المدير له صلاحية إدارة
+            // Verify manager has management authority
             if (!$manager->role->isAdmin()) {
                 throw new BusinessException('المستخدم المحدد ليس مديراً', 400);
             }
 
-            // التحقق من عدم تعيين المستخدم كمدير لنفسه
+            // Check not assigning user as their own manager
             if ($user->id === $manager->id) {
                 throw new BusinessException('لا يمكن تعيين المستخدم كمدير لنفسه', 400);
             }
@@ -354,7 +415,7 @@ class UserService extends BaseService
 
             $user->update(['manager_id' => $manager->id]);
 
-            // تسجيل التغيير
+            // Log assignment change
             $user->logAudit('manager_assigned', [
                 'new_manager_id' => $manager->id,
                 'old_manager_id' => $oldManagerId,
@@ -365,7 +426,10 @@ class UserService extends BaseService
     }
 
     /**
-     * إلغاء تعيين المدير
+     * Remove manager assignment from user
+     *
+     * @param string $userUuid User UUID
+     * @return \App\Models\User Updated user instance
      */
     public function removeManager(string $userUuid): User
     {
@@ -376,7 +440,7 @@ class UserService extends BaseService
 
             $user->update(['manager_id' => null]);
 
-            // تسجيل التغيير
+            // Log removal
             $user->logAudit('manager_removed', [
                 'old_manager_id' => $oldManagerId,
             ]);
@@ -386,7 +450,11 @@ class UserService extends BaseService
     }
 
     /**
-     * الحصول على المرؤوسين
+     * Get manager's subordinates
+     *
+     * @param string $managerUuid Manager UUID
+     * @param array $filters Additional filters [status, role, search]
+     * @return \Illuminate\Database\Eloquent\Collection
      */
     public function getSubordinates(string $managerUuid, array $filters = [])
     {
