@@ -1,0 +1,82 @@
+# Build stage
+FROM node:18-alpine as node-build
+WORKDIR /var/www/html
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+RUN npm run build
+
+# PHP stage
+FROM php:8.2-fpm-alpine as php-base
+
+# Install system dependencies
+RUN apk add --no-cache \
+    postgresql-dev \
+    libpng-dev \
+    libjpeg-turbo-dev \
+    libwebp-dev \
+    libzip-dev \
+    zip \
+    unzip \
+    git \
+    curl \
+    bash \
+    supervisor \
+    openssl
+
+# Install PHP extensions
+RUN docker-php-ext-configure gd --with-jpeg --with-webp
+RUN docker-php-ext-install \
+    pdo \
+    pdo_pgsql \
+    gd \
+    zip \
+    bcmath \
+    opcache \
+    sockets
+
+# Install Redis extension
+RUN apk add --no-cache --virtual .build-deps $PHPIZE_DEPS \
+    && pecl install redis \
+    && docker-php-ext-enable redis \
+    && apk del -f .build-deps
+
+# Install Composer
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+
+# Configure PHP
+COPY docker/php/production/php.ini /usr/local/etc/php/conf.d/production.ini
+COPY docker/php/production/www.conf /usr/local/etc/php-fpm.d/www.conf
+COPY docker/php/production/opcache.ini /usr/local/etc/php/conf.d/opcache.ini
+
+# Set working directory
+WORKDIR /var/www/html
+
+# Copy application files
+COPY . .
+COPY --from=node-build /var/www/html/public/build ./public/build
+
+# Copy supervisor configuration
+COPY docker/supervisor/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Set permissions
+RUN chown -R www-data:www-data /var/www/html/storage
+RUN chown -R www-data:www-data /var/www/html/bootstrap/cache
+RUN chmod -R 755 /var/www/html/storage
+RUN chmod -R 755 /var/www/html/bootstrap/cache
+
+# Install PHP dependencies (no dev packages)
+RUN composer install --no-dev --optimize-autoloader --no-interaction --no-progress
+
+# Generate optimized autoload files
+RUN composer dump-autoload --optimize
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD php artisan health:check || exit 1
+
+# Expose port
+EXPOSE 9000
+
+# Start supervisor
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

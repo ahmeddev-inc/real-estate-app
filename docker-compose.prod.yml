@@ -1,0 +1,310 @@
+version: '3.8'
+
+x-app-config: &app-config
+  build:
+    context: .
+    dockerfile: Dockerfile.prod
+  env_file:
+    - .env.production
+  restart: always
+  networks:
+    - backend
+    - frontend
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+x-postgres-config: &postgres-config
+  image: postgres:15-alpine
+  restart: always
+  networks:
+    - backend
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME}"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+
+services:
+  # Load Balancer (Nginx)
+  load-balancer:
+    image: nginx:alpine
+    container_name: aaker-load-balancer
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/production/load-balancer.conf:/etc/nginx/nginx.conf
+      - ./docker/nginx/production/ssl:/etc/nginx/ssl
+      - ./docker/nginx/production/conf.d:/etc/nginx/conf.d
+      - ./logs/nginx:/var/log/nginx
+    networks:
+      - frontend
+    depends_on:
+      - app1
+      - app2
+      - app3
+
+  # Application Servers (3 instances for load balancing)
+  app1:
+    <<: *app-config
+    container_name: aaker-app-1
+    hostname: app-1
+    environment:
+      - APP_INSTANCE=1
+      - CONTAINER_ROLE=app
+    volumes:
+      - app1_storage:/var/www/html/storage
+      - ./logs/app1:/var/www/html/storage/logs
+
+  app2:
+    <<: *app-config
+    container_name: aaker-app-2
+    hostname: app-2
+    environment:
+      - APP_INSTANCE=2
+      - CONTAINER_ROLE=app
+    volumes:
+      - app2_storage:/var/www/html/storage
+      - ./logs/app2:/var/www/html/storage/logs
+
+  app3:
+    <<: *app-config
+    container_name: aaker-app-3
+    hostname: app-3
+    environment:
+      - APP_INSTANCE=3
+      - CONTAINER_ROLE=app
+    volumes:
+      - app3_storage:/var/www/html/storage
+      - ./logs/app3:/var/www/html/storage/logs
+
+  # Database (PostgreSQL with Master-Replica)
+  postgres-master:
+    <<: *postgres-config
+    container_name: aaker-postgres-master
+    hostname: postgres-master
+    environment:
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
+    volumes:
+      - postgres_master_data:/var/lib/postgresql/data
+      - ./docker/postgres/master:/docker-entrypoint-initdb.d
+      - ./backups/postgres:/backups
+    ports:
+      - "5432:5432"
+    command: >
+      postgres
+      -c max_connections=200
+      -c shared_buffers=256MB
+      -c effective_cache_size=1GB
+      -c maintenance_work_mem=64MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+
+  postgres-replica1:
+    <<: *postgres-config
+    container_name: aaker-postgres-replica1
+    hostname: postgres-replica1
+    environment:
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_replica1_data:/var/lib/postgresql/data
+      - ./docker/postgres/replica:/docker-entrypoint-initdb.d
+    depends_on:
+      - postgres-master
+    command: >
+      bash -c "
+      echo 'Waiting for master to be ready...'
+      sleep 30
+      pg_basebackup -h postgres-master -D /var/lib/postgresql/data -U replicator -v -P --wal-method=stream
+      echo \"host replication replicator 0.0.0.0/0 md5\" >> /var/lib/postgresql/data/pg_hba.conf
+      echo \"standby_mode = 'on'\" >> /var/lib/postgresql/data/recovery.conf
+      echo \"primary_conninfo = 'host=postgres-master port=5432 user=replicator password=replicator_pass'\" >> /var/lib/postgresql/data/recovery.conf
+      echo \"restore_command = 'cp /var/lib/postgresql/archive/%f %p'\" >> /var/lib/postgresql/data/recovery.conf
+      postgres
+      "
+
+  # Redis Cluster (3 nodes)
+  redis1:
+    image: redis:7-alpine
+    container_name: aaker-redis-1
+    restart: always
+    command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000
+    volumes:
+      - redis1_data:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - backend
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  redis2:
+    image: redis:7-alpine
+    container_name: aaker-redis-2
+    restart: always
+    command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000
+    volumes:
+      - redis2_data:/data
+    networks:
+      - backend
+    ports:
+      - "6380:6379"
+    depends_on:
+      - redis1
+
+  redis3:
+    image: redis:7-alpine
+    container_name: aaker-redis-3
+    restart: always
+    command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000
+    volumes:
+      - redis3_data:/data
+    networks:
+      - backend
+    ports:
+      - "6381:6379"
+    depends_on:
+      - redis1
+      - redis2
+
+  # Queue Worker (Horizon)
+  queue:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    container_name: aaker-queue
+    restart: always
+    env_file:
+      - .env.production
+    command: php artisan horizon
+    networks:
+      - backend
+    volumes:
+      - queue_storage:/var/www/html/storage
+      - ./logs/queue:/var/www/html/storage/logs
+    depends_on:
+      - redis1
+      - postgres-master
+
+  # Scheduler
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    container_name: aaker-scheduler
+    restart: always
+    env_file:
+      - .env.production
+    command: php artisan schedule:work
+    networks:
+      - backend
+    volumes:
+      - scheduler_storage:/var/www/html/storage
+    depends_on:
+      - redis1
+      - postgres-master
+
+  # Backup Service
+  backup:
+    image: alpine:latest
+    container_name: aaker-backup
+    restart: always
+    volumes:
+      - ./scripts/backup:/backup-scripts
+      - ./backups:/backups
+      - postgres_master_data:/source/postgres
+      - app1_storage:/source/storage/app1
+      - app2_storage:/source/storage/app2
+      - app3_storage:/source/storage/app3
+    networks:
+      - backend
+    command: >
+      sh -c "
+      echo 'Backup service started'
+      chmod +x /backup-scripts/*
+      # Run daily backup at 2 AM
+      echo '0 2 * * * /backup-scripts/daily-backup.sh' > /etc/crontabs/root
+      crond -f
+      "
+
+  # Monitoring (Prometheus + Grafana)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: aaker-prometheus
+    restart: always
+    volumes:
+      - ./docker/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - monitoring
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: aaker-grafana
+    restart: always
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./docker/monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    networks:
+      - monitoring
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_master_data:
+  postgres_replica1_data:
+  redis1_data:
+  redis2_data:
+  redis3_data:
+  app1_storage:
+  app2_storage:
+  app3_storage:
+  queue_storage:
+  scheduler_storage:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  frontend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+  backend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+  monitoring:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/16
