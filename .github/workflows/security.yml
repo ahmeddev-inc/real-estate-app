@@ -35,7 +35,7 @@ jobs:
         vendor/bin/phpstan analyse --memory-limit=2G --level=max
 
     - name: Dependency Review
-      uses: actions/dependency-review-action@v3
+      uses: actions/dependency-review-action@v4
 
   snyk-scan:
     runs-on: ubuntu-latest
